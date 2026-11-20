@@ -1,30 +1,139 @@
-"""Your code. One stub per milestone; build them in order and keep each one small."""
+"""Legal Sentence Game: one section per milestone, built in order."""
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Iterable
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CORPUS_PATH = ROOT / "corpus" / "clauses.jsonl"
+
+# The clause types the game uses: LEDGAR label -> name shown to the player.
+CLAUSE_TYPES = {
+    "Governing Laws": "Governing Law",
+    "Confidentiality": "Confidentiality",
+    "Terminations": "Termination",
+    "Indemnifications": "Indemnification",
+    "Notices": "Notices",
+    "Severability": "Severability",
+    "Assignments": "Assignment",
+    "Entire Agreements": "Entire Agreement",
+}
+
 
 # --- Milestone 1: Prepare a legal text corpus for n-gram model training.
-# Hint: Use the text processing techniques from the 'Build a Next-Word Predictor from Scratch' drill to prepare your corpus.
-def milestone_1():  # TODO(milestone 1)
-    raise NotImplementedError("TODO(milestone 1)")
+# Real contract provisions from LEDGAR (LexGLUE), cut down to one clean sentence each.
+
+_ABBREVIATIONS = {"inc", "corp", "co", "ltd", "no", "nos", "sec", "secs", "u.s", "e.g", "i.e", "etc", "l.l.c",
+                  "llc", "l.p", "n.a", "mr", "ms", "mrs", "dr", "st", "jr", "v", "vs", "art", "para", "cal", "del"}
+_ENUMERATION = re.compile(r"^(?:(?:section|article|clause)\s+)?(?:\(?[0-9]+[a-z]?\)|\([a-z]{1,4}\)|(?:[0-9]+\.)+[0-9]*)\s+",
+                          re.IGNORECASE)
+_TOKEN = re.compile(r"\$?[0-9]+(?:[.,][0-9]+)*%?|[a-z]+(?:[.'-][a-z]+)*|[^\w\s]")
+_QUOTES = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'", "–": "-", "—": "-",
+                         " ": " "})
 
 
-# --- Milestone 2: Implement the n-gram next-word predictor.
-# Hint: Apply the n-gram probability calculation and prediction logic from the 'Build a Next-Word Predictor from Scratch' drill.
-def milestone_2():  # TODO(milestone 2)
-    raise NotImplementedError("TODO(milestone 2)")
+def clean_text(text: str) -> str:
+    """Straighten quotes, squash whitespace and drop leading numbering such as '9.2', '(a)' or 'Section 4.'."""
+    text = re.sub(r"\s+", " ", text.translate(_QUOTES)).strip()
+    previous = None
+    while previous != text:
+        previous = text
+        text = _ENUMERATION.sub("", text, count=1).strip()
+    return text
 
 
-# --- Milestone 3: Load the fine-tuned GPT-2 model for legal clause classification.
-# Hint: Recall how to load and use a pre-trained or fine-tuned model from the 'Fine-Tune GPT-2 to Tag Legal Contract Clauses' drill.
-def milestone_3():  # TODO(milestone 3)
-    raise NotImplementedError("TODO(milestone 3)")
+def _ends_with_abbreviation(sentence: str) -> bool:
+    last = sentence.rsplit(" ", 1)[-1].lower().rstrip(".")
+    return last in _ABBREVIATIONS or (len(last) == 1 and last.isalpha())
 
 
-# --- Milestone 4: Create a CLI game interface presenting partial legal sentences for completion.
-# Hint: Focus on user input and output, integrating your n-gram model to present initial sentence fragments.
-def milestone_4():  # TODO(milestone 4)
-    raise NotImplementedError("TODO(milestone 4)")
+def split_sentences(text: str) -> list[str]:
+    """Split on . ! ? followed by a capital letter, without breaking after 'Inc.', 'U.S.' and similar."""
+    sentences: list[str] = []
+    for piece in re.split(r"(?<=[.!?])\s+(?=[A-Z(\"])", text):
+        if sentences and _ends_with_abbreviation(sentences[-1]):
+            sentences[-1] += " " + piece
+        else:
+            sentences.append(piece)
+    return [s.strip() for s in sentences if s.strip()]
 
 
-# --- Milestone 5: After user completion, classify the full sentence and provide feedback.
-# Hint: Use the loaded GPT-2 model for inference, similar to the classification step in the 'Fine-Tune GPT-2 to Tag Legal Contract Clauses' drill.
-def milestone_5():  # TODO(milestone 5)
-    raise NotImplementedError("TODO(milestone 5)")
+def tokenize(text: str) -> list[str]:
+    """Lower-case word and punctuation tokens: 'Section 9.2, the Company's' -> ['section', '9.2', ',', ...]."""
+    return _TOKEN.findall(text.translate(_QUOTES).lower())
+
+
+def detokenize(tokens: Iterable[str]) -> str:
+    """Join tokens back into readable text (no space before , . ; : ) and none after ( $)."""
+    text = " ".join(tokens)
+    text = re.sub(r"\s+([,.;:!?)\]%])", r"\1", text)
+    return re.sub(r"([(\[$])\s+", r"\1", text)
+
+
+def is_good_sentence(sentence: str, min_words: int = 10, max_words: int = 45) -> bool:
+    """A usable game sentence: the right length, mostly lower case (not a SHOUTED disclaimer), ends like a sentence."""
+    words = sentence.split()
+    letters = [c for c in sentence if c.isalpha()]
+    if not (min_words <= len(words) <= max_words) or not letters:
+        return False
+    if sum(c.isupper() for c in letters) / len(letters) > 0.25:
+        return False
+    return sentence.endswith((".", ";")) and sentence[0].isupper()
+
+
+def build_corpus(records: Iterable[tuple[str, str]], per_label: int = 250, play_every: int = 10,
+                 min_words: int = 10, max_words: int = 45) -> list[dict]:
+    """Turn (provision text, LEDGAR label) pairs into game rows {text, label, split}.
+
+    Keeps the first sentence of each provision whose label is in CLAUSE_TYPES, drops duplicates, caps each label at
+    `per_label`, and holds back every `play_every`-th sentence of a label as split="play" (used for game rounds,
+    never for training), the rest as split="train".
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    kept = {label: 0 for label in CLAUSE_TYPES.values()}
+    for text, ledgar_label in records:
+        label = CLAUSE_TYPES.get(ledgar_label)
+        if label is None or kept[label] >= per_label:
+            continue
+        sentences = split_sentences(clean_text(text))
+        if not sentences or not is_good_sentence(sentences[0], min_words, max_words):
+            continue
+        sentence = sentences[0]
+        key = " ".join(tokenize(sentence))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept[label] += 1
+        split = "play" if kept[label] % play_every == 0 else "train"
+        rows.append({"text": sentence, "label": label, "split": split})
+    return rows
+
+
+def download_ledgar(split: str = "train+validation+test") -> Iterable[tuple[str, str]]:
+    """Stream (text, label name) pairs from LEDGAR on the Hugging Face Hub (needs internet once)."""
+    from datasets import load_dataset
+
+    data = load_dataset("coastalcph/lex_glue", "ledgar", split=split)
+    names = data.features["label"].names
+    return ((row["text"], names[row["label"]]) for row in data)
+
+
+def save_corpus(rows: list[dict], path: str | Path = CORPUS_PATH) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    return path
+
+
+def load_corpus(path: str | Path = CORPUS_PATH, split: str | None = None) -> list[dict]:
+    """Read the corpus rows, optionally only one split ('train' or 'play')."""
+    rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    return [row for row in rows if split is None or row["split"] == split]
+
+
+def corpus_tokens(rows: Iterable[dict]) -> list[list[str]]:
+    """The n-gram training input: one token list per sentence."""
+    return [tokenize(row["text"]) for row in rows]

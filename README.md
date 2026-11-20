@@ -14,7 +14,7 @@ This project creates a unique CLI game designed for law students to hone their l
 
 Tick these off as you go, and commit after each one.
 
-- [ ] **1. Prepare a legal text corpus for n-gram model training.**  
+- [x] **1. Prepare a legal text corpus for n-gram model training.**  
       Hint: Use the text processing techniques from the 'Build a Next-Word Predictor from Scratch' drill to prepare your corpus.
 - [ ] **2. Implement the n-gram next-word predictor.**  
       Hint: Apply the n-gram probability calculation and prediction logic from the 'Build a Next-Word Predictor from Scratch' drill.
