@@ -49,9 +49,28 @@ def test_milestone_1_committed_corpus_covers_every_clause_type():
 
 
 # Milestone 2: Implement the n-gram next-word predictor.
-@pytest.mark.skip(reason="remove this line when you start milestone 2")
-def test_milestone_2():
-    raise NotImplementedError("write the test for milestone 2")
+def test_milestone_2_ngram_counts_backoff_and_generation():
+    sentences = [core.tokenize(s) for s in ["The party shall pay the fee.", "The party shall give notice.",
+                                            "The company shall pay the fee."]]
+    model = core.NGramModel(3).fit(sentences)
+
+    context = ["the", "party"]
+    assert abs(sum(model.prob(w, context) for w in model.vocab | {"<unknown>"}) - 1) < 1e-9
+    assert model.predict(context, 1)[0][0] == "shall"
+    assert {w for w, _ in model.predict(["party", "shall"], 2)} == {"pay", "give"}
+    assert model.predict(["never", "shall"], 1)[0][0] == "pay"          # unseen trigram backs off to "shall pay"
+    assert model.generate(["the", "company"]) == ["shall", "pay", "the", "fee", "."]
+    assert model.perplexity(sentences) < model.perplexity([core.tokenize("fee the pay shall party the.")])
+
+
+def test_milestone_2_ngram_predicts_legal_language():
+    model = core.train_ngram()
+    assert model.predict(core.tokenize("This Agreement constitutes the entire"), 1)[0][0] == "agreement"
+    assert model.predict(core.tokenize("construed in accordance with the"), 1)[0][0] == "laws"
+    ending = core.detokenize(model.generate(core.tokenize("If any provision of this Agreement is held")))
+    assert ending.startswith("to be invalid")
+    held_out = core.corpus_tokens(core.load_corpus(split="play"))
+    assert model.perplexity(held_out) < core.train_ngram(n=2).perplexity(held_out)
 
 
 # Milestone 3: Load the fine-tuned GPT-2 model for legal clause classification.

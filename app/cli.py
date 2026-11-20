@@ -14,6 +14,10 @@ def main(argv: list[str] | None = None) -> None:
     build.add_argument("--per-label", type=int, default=250, help="sentences kept per clause type")
     build.add_argument("--out", default=str(core.CORPUS_PATH))
 
+    predict = sub.add_parser("predict", help="milestone 2: n-gram next-word predictions for a sentence start")
+    predict.add_argument("text", help='e.g. "This Agreement shall be governed by"')
+    predict.add_argument("-k", type=int, default=5, help="how many next words to show")
+
     args = parser.parse_args(argv)
     if args.command == "hello":
         print("Legal Sentence Game is ready. Open README.md for your milestones.")
@@ -24,6 +28,12 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Wrote {len(rows)} sentences to {path}")
         for label, n in sorted(counts.items()):
             print(f"  {label:<18} {n}")
+    elif args.command == "predict":
+        model = core.train_ngram()
+        tokens = core.tokenize(args.text)
+        for word, prob in model.predict(tokens, args.k):
+            print(f"  {word:<15} {prob:.1%}")
+        print(f"Most likely ending: {args.text} {core.detokenize(model.generate(tokens))}")
 
 
 if __name__ == "__main__":

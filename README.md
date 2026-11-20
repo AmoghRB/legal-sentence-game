@@ -16,7 +16,7 @@ Tick these off as you go, and commit after each one.
 
 - [x] **1. Prepare a legal text corpus for n-gram model training.**  
       Hint: Use the text processing techniques from the 'Build a Next-Word Predictor from Scratch' drill to prepare your corpus.
-- [ ] **2. Implement the n-gram next-word predictor.**  
+- [x] **2. Implement the n-gram next-word predictor.**  
       Hint: Apply the n-gram probability calculation and prediction logic from the 'Build a Next-Word Predictor from Scratch' drill.
 - [ ] **3. Load the fine-tuned GPT-2 model for legal clause classification.**  
       Hint: Recall how to load and use a pre-trained or fine-tuned model from the 'Fine-Tune GPT-2 to Tag Legal Contract Clauses' drill.
