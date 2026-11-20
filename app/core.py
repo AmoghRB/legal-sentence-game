@@ -433,31 +433,129 @@ def ngram_ending(model: NGramModel, text: str, max_words: int = 30) -> str:
     return detokenize(model.generate(tokenize(text), max_words))
 
 
-def play(rounds: list[Round], ngram: NGramModel, ask=input, say=print) -> list[dict]:
-    """Run the game in the terminal. `ask` and `say` are swappable so tests can play it too."""
+def _read_ending(game_round: Round, ngram: NGramModel, ask, say) -> tuple[str | None, bool]:
+    """Ask until the player types an ending; returns (ending or None if they quit, whether they used '?')."""
+    hint_used = False
+    while True:
+        try:
+            answer = ask("Your ending (? = n-gram suggestion, q = quit) > ").strip()
+        except EOFError:
+            answer = "q"
+        if answer.lower() == "q":
+            return None, hint_used
+        if answer == "?":
+            hint_used = True
+            say(f"  n-gram suggests: ... {ngram_ending(ngram, game_round.prefix)}")
+        elif len(answer.split()) < 2:
+            say("  Write at least two words to finish the sentence.")
+        else:
+            return answer, hint_used
+
+
+def play(rounds: list[Round], ngram: NGramModel, classifier=None, ask=None, say=None,
+         keywords: dict[str, list[str]] | None = None) -> list[dict]:
+    """Run the game in the terminal. With a `classifier`, GPT-2 marks each sentence (milestone 5).
+    `ask` and `say` default to input() and print(); tests swap them to play the game."""
+    ask, say = ask or input, say or print
     results = []
     for number, game_round in enumerate(rounds, 1):
         article = "an" if game_round.target[0] in "AEIOU" else "a"
         say(f"\nRound {number} of {len(rounds)} · write {article} {game_round.target} clause")
         say(f"  {game_round.prefix} ...")
         say(f"  n-gram hints for the next word: {' · '.join(ngram_hints(ngram, game_round.prefix))}")
-        hint_used = False
-        while True:
-            try:
-                answer = ask("Your ending (? = n-gram suggestion, q = quit) > ").strip()
-            except EOFError:
-                answer = "q"
-            if answer.lower() == "q":
-                return results
-            if answer == "?":
-                hint_used = True
-                say(f"  n-gram suggests: ... {ngram_ending(ngram, game_round.prefix)}")
-            elif len(answer.split()) < 2:
-                say("  Write at least two words to finish the sentence.")
-            else:
-                break
+        answer, hint_used = _read_ending(game_round, ngram, ask, say)
+        if answer is None:
+            break
         sentence = join_completion(game_round.prefix, answer)
         say(f"  Your clause: {sentence}")
+        result = {"target": game_round.target, "sentence": sentence, "hint_used": hint_used}
+        if classifier is not None:
+            feedback = judge(classifier, sentence, game_round.target, hint_used)
+            for line in feedback_lines(feedback, keywords):
+                say(line)
+            result.update(predicted=feedback.predicted, matched=feedback.matched, points=feedback.points,
+                          confidence=round(feedback.probs[feedback.predicted], 4))
+        if not hint_used:
+            say(f"  n-gram would end it: ... {ngram_ending(ngram, game_round.prefix)}")
         say(f"  Real clause: {game_round.original}")
-        results.append({"target": game_round.target, "sentence": sentence, "hint_used": hint_used})
+        results.append(result)
+    if classifier is not None and results:
+        say("\n" + score_summary(results))
     return results
+
+
+# --- Milestone 5: After user completion, classify the full sentence and provide feedback.
+# GPT-2 tags the player's sentence; points = 10 x the probability it gave the clause type that was asked for.
+
+_STOPWORDS = {"this", "that", "shall", "such", "with", "from", "have", "been", "which", "under", "other", "will",
+              "than", "into", "upon", "each", "their", "there", "these", "those", "then", "them", "they", "would",
+              "only", "also", "were", "being", "hereby", "herein", "pursuant", "respect"}
+
+
+def clause_keywords(rows: Iterable[dict], top: int = 5) -> dict[str, list[str]]:
+    """Words that mark each clause type: common in its sentences, rare in the others (weighted log-odds)."""
+    doc_freq: dict[str, Counter] = defaultdict(Counter)
+    docs: Counter = Counter()
+    for row in rows:
+        docs[row["label"]] += 1
+        doc_freq[row["label"]].update({t for t in tokenize(row["text"])
+                                       if t.isalpha() and len(t) > 3 and t not in _STOPWORDS})
+    overall: Counter = sum(doc_freq.values(), Counter())
+    total = sum(docs.values())
+    keywords = {}
+    for label, freq in doc_freq.items():
+        def score(word: str) -> float:
+            inside = (freq[word] + 1) / (docs[label] + 2)
+            outside = (overall[word] - freq[word] + 1) / (total - docs[label] + 2)
+            return inside * math.log(inside / outside)
+        keywords[label] = sorted(freq, key=lambda word: (-score(word), word))[:top]
+    return keywords
+
+
+@dataclass
+class Feedback:
+    sentence: str
+    target: str                 # the clause type the player was asked for
+    probs: dict[str, float]     # GPT-2's probability for every clause type, most likely first
+    hint_used: bool = False
+
+    @property
+    def predicted(self) -> str:
+        return next(iter(self.probs))
+
+    @property
+    def matched(self) -> bool:
+        return self.predicted == self.target
+
+    @property
+    def points(self) -> int:
+        points = round(10 * self.probs.get(self.target, 0.0))
+        return points // 2 if self.hint_used else points
+
+
+def judge(classifier, sentence: str, target: str, hint_used: bool = False) -> Feedback:
+    """Classify the player's finished sentence with the fine-tuned GPT-2."""
+    return Feedback(sentence, target, classifier.predict_proba(sentence), hint_used)
+
+
+def feedback_lines(feedback: Feedback, keywords: dict[str, list[str]] | None = None) -> list[str]:
+    """What the player sees after a round: the verdict, the runners-up, tips on a miss, and the points."""
+    ranked = list(feedback.probs.items())
+    verdict = f"  GPT-2 reads it as: {feedback.predicted} ({ranked[0][1]:.0%})"
+    if feedback.matched:
+        lines = [verdict + "  ✓ the clause you were asked for"]
+    else:
+        lines = [verdict + f"  ✗ you were asked for {feedback.target} "
+                           f"({feedback.probs.get(feedback.target, 0.0):.0%})"]
+        if keywords and keywords.get(feedback.target):
+            lines.append(f"  Tip: {feedback.target} clauses usually say: {', '.join(keywords[feedback.target])}")
+    lines.append("  Next best: " + " · ".join(f"{label} {prob:.0%}" for label, prob in ranked[1:3]))
+    lines.append(f"  +{feedback.points} points" + (" (halved for the n-gram suggestion)" if feedback.hint_used else ""))
+    return lines
+
+
+def score_summary(results: list[dict]) -> str:
+    score = sum(result["points"] for result in results)
+    matched = sum(result["matched"] for result in results)
+    return (f"Score: {score} / {10 * len(results)} · "
+            f"{matched} of {len(results)} clauses read as the type you were asked for")

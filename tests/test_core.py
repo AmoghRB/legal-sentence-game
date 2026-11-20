@@ -138,6 +138,51 @@ def test_milestone_4_play_loop_shows_hints_and_reads_endings():
 
 
 # Milestone 5: After user completion, classify the full sentence and provide feedback.
-@pytest.mark.skip(reason="remove this line when you start milestone 5")
-def test_milestone_5():
-    raise NotImplementedError("write the test for milestone 5")
+class FixedClassifier:
+    """Stands in for GPT-2 with fixed probabilities."""
+
+    def __init__(self, probs):
+        self.probs = probs
+
+    def predict_proba(self, text):
+        return dict(sorted(self.probs.items(), key=lambda pair: -pair[1]))
+
+
+def test_milestone_5_points_and_feedback():
+    gpt2 = FixedClassifier({"Severability": 0.8, "Termination": 0.15, "Notices": 0.05})
+    hit = core.judge(gpt2, "If any provision is held invalid, the rest survives.", "Severability")
+    assert hit.matched and hit.predicted == "Severability" and hit.points == 8
+    assert core.judge(gpt2, "If any provision is held invalid.", "Severability", hint_used=True).points == 4
+
+    miss = core.judge(gpt2, "If any provision is held invalid.", "Termination")
+    assert not miss.matched and miss.points == 2
+    screen = "\n".join(core.feedback_lines(miss, {"Termination": ["terminate", "terminated"]}))
+    assert "GPT-2 reads it as: Severability (80%)" in screen
+    assert "you were asked for Termination (15%)" in screen
+    assert "terminate, terminated" in screen and "+2 points" in screen
+
+
+def test_milestone_5_keywords_explain_each_clause_type():
+    keywords = core.clause_keywords(core.load_corpus(split="train"))
+    assert set(keywords) == set(core.CLAUSE_TYPES.values())
+    assert {"governed", "laws"} <= set(keywords["Governing Law"])
+    assert {"invalid", "unenforceable"} <= set(keywords["Severability"])
+    assert "confidential" in keywords["Confidentiality"] and "indemnify" in keywords["Indemnification"]
+
+
+def test_milestone_5_full_game_with_the_fine_tuned_gpt2(tiny_model_dir, monkeypatch, tmp_path, capsys):
+    from app.cli import main
+    from app.storage import Store
+
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "app.json"))
+    answers = iter(["shall remain in full force and effect.", "?", "by written notice to the other party."])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    main(["play", "--rounds", "2", "--seed", "3", "--model", str(tiny_model_dir)])
+    screen = capsys.readouterr().out
+    assert screen.count("GPT-2 reads it as:") == 2
+    assert "n-gram suggests" in screen and "Score:" in screen
+
+    game = Store().get("games")[-1]
+    assert game["rounds"] == 2 and game["max"] == 20 and 0 <= game["score"] <= 20
+    main(["history"])
+    assert "Best:" in capsys.readouterr().out

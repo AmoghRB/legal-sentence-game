@@ -1,8 +1,10 @@
 """Command-line entry point: `python -m app.cli --help`."""
 import argparse
 from collections import Counter
+from datetime import datetime
 
 from app import core
+from app.storage import Store
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -33,6 +35,8 @@ def main(argv: list[str] | None = None) -> None:
     play.add_argument("--difficulty", choices=list(core.DIFFICULTY), default="medium",
                       help="how much of each clause you are shown: easy 60%%, medium 40%%, hard 25%%")
     play.add_argument("--seed", type=int, default=None, help="same seed, same clauses")
+    play.add_argument("--model", default=str(core.MODEL_DIR), help="the fine-tuned GPT-2 folder")
+    sub.add_parser("history", help="your past games and best score")
 
     args = parser.parse_args(argv)
     if args.command == "hello":
@@ -64,15 +68,35 @@ def main(argv: list[str] | None = None) -> None:
         for label, prob in list(classifier.predict_proba(args.text).items())[:3]:
             print(f"  {label:<18} {prob:.1%}")
     elif args.command == "play":
-        ngram = core.train_ngram()
+        try:
+            classifier = core.load_classifier(args.model)
+        except FileNotFoundError as error:
+            raise SystemExit(str(error))
+        train_rows = core.load_corpus(split="train")
+        ngram, keywords = core.train_ngram(train_rows), core.clause_keywords(train_rows)
         rounds = core.pick_rounds(core.load_corpus(split="play"), args.rounds, args.difficulty, args.seed)
         print(f"Legal Sentence Game · {len(rounds)} rounds · {args.difficulty}")
-        print("Finish each clause so it reads as the clause type asked for.")
+        print("Finish each clause so the fine-tuned GPT-2 reads it as the clause type asked for.")
+        print("Points per round: 10 x GPT-2's probability for that type (halved if you ask for the n-gram's ending).")
         try:
-            core.play(rounds, ngram)
+            results = core.play(rounds, ngram, classifier, keywords=keywords)
         except KeyboardInterrupt:
             print()
-
+            return
+        if results:
+            store = Store()
+            store.put("games", store.get("games", []) + [{
+                "date": datetime.now().isoformat(timespec="minutes"), "difficulty": args.difficulty,
+                "rounds": len(results), "score": sum(r["points"] for r in results), "max": 10 * len(results)}])
+    elif args.command == "history":
+        games = Store().get("games", [])
+        if not games:
+            print("No games yet. Run: python -m app.cli play")
+        for game in games[-10:]:
+            print(f"  {game['date']}  {game['difficulty']:<6}  {game['score']:>3} / {game['max']}")
+        if games:
+            best = max(games, key=lambda game: game["score"] / game["max"])
+            print(f"Best: {best['score']} / {best['max']} on {best['date']} ({best['difficulty']})")
 
 if __name__ == "__main__":
     main()
