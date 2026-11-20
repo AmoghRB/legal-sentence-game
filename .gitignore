@@ -10,3 +10,6 @@ __pycache__/
 # Local data
 data/
 *.db
+
+# Fine-tuned models (rebuild with: python -m app.cli train)
+models/

@@ -1,4 +1,6 @@
 """Tests for the five milestones in README.md, one section each."""
+import json
+
 import pytest
 
 from app import core
@@ -74,9 +76,25 @@ def test_milestone_2_ngram_predicts_legal_language():
 
 
 # Milestone 3: Load the fine-tuned GPT-2 model for legal clause classification.
-@pytest.mark.skip(reason="remove this line when you start milestone 3")
-def test_milestone_3():
-    raise NotImplementedError("write the test for milestone 3")
+def test_milestone_3_fine_tuned_gpt2_loads_and_classifies(tiny_model_dir):
+    classifier = core.load_classifier(tiny_model_dir, device="cpu")
+    assert type(classifier.model).__name__ == "GPT2ForSequenceClassification"
+    assert classifier.labels == sorted(core.CLAUSE_TYPES.values())
+
+    probs = classifier.predict_proba("This Agreement shall be governed by the laws of the State of New York.")
+    assert set(probs) == set(classifier.labels)
+    assert abs(sum(probs.values()) - 1) < 1e-5
+    assert list(probs.values()) == sorted(probs.values(), reverse=True)
+    label, prob = classifier.classify("Any notice under this Agreement shall be in writing.")
+    assert label in classifier.labels and 0 < prob <= 1
+
+    metrics = json.loads((tiny_model_dir / "metrics.json").read_text())
+    assert metrics["labels"] == classifier.labels and len(metrics["losses"]) == 1
+
+
+def test_milestone_3_missing_model_says_how_to_train(tmp_path):
+    with pytest.raises(FileNotFoundError, match="app.cli train"):
+        core.load_classifier(tmp_path / "no-model-here")
 
 
 # Milestone 4: Create a CLI game interface presenting partial legal sentences for completion.

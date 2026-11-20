@@ -18,6 +18,16 @@ def main(argv: list[str] | None = None) -> None:
     predict.add_argument("text", help='e.g. "This Agreement shall be governed by"')
     predict.add_argument("-k", type=int, default=5, help="how many next words to show")
 
+    train = sub.add_parser("train", help="milestone 3: fine-tune GPT-2 to tag clause types")
+    train.add_argument("--base", default="gpt2", help="model to start from (gpt2, distilgpt2 or a local folder)")
+    train.add_argument("--epochs", type=int, default=3)
+    train.add_argument("--batch-size", type=int, default=16)
+    train.add_argument("--out", default=str(core.MODEL_DIR))
+
+    classify = sub.add_parser("classify", help="milestone 3: clause type of a sentence, by the fine-tuned GPT-2")
+    classify.add_argument("text")
+    classify.add_argument("--model", default=str(core.MODEL_DIR))
+
     args = parser.parse_args(argv)
     if args.command == "hello":
         print("Legal Sentence Game is ready. Open README.md for your milestones.")
@@ -34,6 +44,19 @@ def main(argv: list[str] | None = None) -> None:
         for word, prob in model.predict(tokens, args.k):
             print(f"  {word:<15} {prob:.1%}")
         print(f"Most likely ending: {args.text} {core.detokenize(model.generate(tokens))}")
+    elif args.command == "train":
+        print(f"Fine-tuning {args.base} on {core.CORPUS_PATH.name} (training split)...")
+        metrics = core.train_classifier(base_model=args.base, out_dir=args.out, epochs=args.epochs,
+                                        batch_size=args.batch_size)
+        held_out = core.load_classifier(args.out).accuracy(core.load_corpus(split="play"))
+        print(f"Saved to {args.out}. Accuracy on the held-out game sentences: {held_out:.1%}")
+    elif args.command == "classify":
+        try:
+            classifier = core.load_classifier(args.model)
+        except FileNotFoundError as error:
+            raise SystemExit(str(error))
+        for label, prob in list(classifier.predict_proba(args.text).items())[:3]:
+            print(f"  {label:<18} {prob:.1%}")
 
 
 if __name__ == "__main__":

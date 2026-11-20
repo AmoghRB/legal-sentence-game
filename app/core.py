@@ -237,3 +237,139 @@ def train_ngram(rows: Iterable[dict] | None = None, n: int = 4) -> NGramModel:
     """
     rows = load_corpus(split="train") if rows is None else rows
     return NGramModel(n).fit(corpus_tokens(rows))
+
+
+# --- Milestone 3: Load the fine-tuned GPT-2 model for legal clause classification.
+# GPT-2 with a classification head (GPT2ForSequenceClassification), fine-tuned on the corpus' training sentences.
+
+MODEL_DIR = ROOT / "models" / "clause-gpt2"
+
+
+def pick_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+class ClauseClassifier:
+    """A fine-tuned GPT-2 that reads a sentence and says which clause type it is."""
+
+    def __init__(self, model, tokenizer, device: str = "cpu", max_length: int = 96):
+        self.model, self.tokenizer, self.device, self.max_length = model, tokenizer, device, max_length
+
+    @property
+    def labels(self) -> list[str]:
+        return [self.model.config.id2label[i] for i in range(self.model.config.num_labels)]
+
+    def predict_proba(self, text: str) -> dict[str, float]:
+        """Probability of every clause type, most likely first."""
+        import torch
+
+        encoded = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=self.max_length)
+        with torch.no_grad():
+            logits = self.model(**encoded.to(self.device)).logits[0]
+        probs = logits.float().softmax(-1).tolist()
+        return dict(sorted(zip(self.labels, probs), key=lambda pair: -pair[1]))
+
+    def classify(self, text: str) -> tuple[str, float]:
+        """The most likely clause type and its probability."""
+        return next(iter(self.predict_proba(text).items()))
+
+    def accuracy(self, rows: Iterable[dict]) -> float:
+        rows = list(rows)
+        return sum(self.classify(row["text"])[0] == row["label"] for row in rows) / max(len(rows), 1)
+
+
+def _quiet_transformers() -> None:
+    """Hide the progress bars and load reports transformers prints, so the game screen stays clean."""
+    from transformers.utils import logging
+
+    logging.set_verbosity_error()
+    logging.disable_progress_bar()
+
+
+def load_classifier(model_dir: str | Path = MODEL_DIR, device: str | None = None) -> ClauseClassifier:
+    """Load the fine-tuned GPT-2 clause classifier saved by `train_classifier`."""
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    _quiet_transformers()
+    model_dir = Path(model_dir)
+    if not (model_dir / "config.json").exists():
+        raise FileNotFoundError(f"No fine-tuned model in {model_dir}. Run `python -m app.cli train` first.")
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+    model.config.pad_token_id = tokenizer.pad_token_id
+    device = device or pick_device()
+    model.to(device).eval()
+    return ClauseClassifier(model, tokenizer, device)
+
+
+def train_classifier(rows: Iterable[dict] | None = None, base_model: str = "gpt2", out_dir: str | Path = MODEL_DIR,
+                     epochs: int = 3, batch_size: int = 16, lr: float = 5e-5, max_length: int = 96,
+                     val_fraction: float = 0.1, seed: int = 0, device: str | None = None, log=print) -> dict:
+    """Fine-tune GPT-2 to tag clause types, save it to `out_dir`, and return the training metrics."""
+    import random
+
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    rows = load_corpus(split="train") if rows is None else list(rows)
+    labels = sorted({row["label"] for row in rows})
+    label2id = {label: i for i, label in enumerate(labels)}
+    rows = rows[:]
+    random.Random(seed).shuffle(rows)
+    n_val = max(1, int(len(rows) * val_fraction))
+    val, train = rows[:n_val], rows[n_val:]
+
+    _quiet_transformers()
+    torch.manual_seed(seed)
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token          # GPT-2 has no pad token; reuse end-of-text
+    model = AutoModelForSequenceClassification.from_pretrained(
+        base_model, num_labels=len(labels), id2label=dict(enumerate(labels)), label2id=label2id)
+    model.config.pad_token_id = tokenizer.pad_token_id
+    device = device or pick_device()
+    model.to(device)
+
+    steps = epochs * math.ceil(len(train) / batch_size)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: max(0.0, 1 - step / steps))
+    classifier = ClauseClassifier(model, tokenizer, device, max_length)
+    rng = random.Random(seed)
+    losses, val_accuracy = [], 0.0
+    for epoch in range(epochs):
+        model.train()
+        rng.shuffle(train)
+        epoch_loss = 0.0
+        for start in range(0, len(train), batch_size):
+            batch = train[start:start + batch_size]
+            encoded = tokenizer([row["text"] for row in batch], padding=True, truncation=True,
+                                max_length=max_length, return_tensors="pt").to(device)
+            targets = torch.tensor([label2id[row["label"]] for row in batch], device=device)
+            loss = model(**encoded, labels=targets).loss
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            epoch_loss += loss.item() * len(batch)
+        losses.append(epoch_loss / len(train))
+        model.eval()
+        val_accuracy = classifier.accuracy(val)
+        log(f"epoch {epoch + 1}/{epochs}: train loss {losses[-1]:.3f}, validation accuracy {val_accuracy:.1%}")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(out_dir)
+    tokenizer.save_pretrained(out_dir)
+    metrics = {"base_model": base_model, "labels": labels, "train_size": len(train), "val_size": len(val),
+               "epochs": epochs, "losses": losses, "val_accuracy": val_accuracy}
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    return metrics
