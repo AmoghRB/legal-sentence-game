@@ -186,3 +186,19 @@ def test_milestone_5_full_game_with_the_fine_tuned_gpt2(tiny_model_dir, monkeypa
     assert game["rounds"] == 2 and game["max"] == 20 and 0 <= game["score"] <= 20
     main(["history"])
     assert "Best:" in capsys.readouterr().out
+
+
+# How well it works: every model beats a simple baseline on the held-out game sentences.
+def test_gpt2_and_ngram_are_compared_with_simple_baselines(tiny_model_dir):
+    train, held_out = core.load_corpus(split="train"), core.load_corpus(split="play")
+    keyword = core.KeywordBaseline(train)
+    assert keyword.classify("This Agreement shall be governed by the laws of the State of Ohio.")[0] == "Governing Law"
+    assert keyword.classify("Nothing relevant here at all.") == (keyword.fallback, 0.0)
+
+    results = {method: score for _, method, score in core.evaluate(core.load_classifier(tiny_model_dir, "cpu"))}
+    majority = next(score for method, score in results.items() if method.startswith("baseline: always"))
+    assert majority < results["baseline: count marker words"] < 1
+    assert 0 <= results["fine-tuned GPT-2"] <= 1
+    assert (results["baseline: most common word"] < results["2-gram"] < results["3-gram"]
+            < results["4-gram (used in the game)"])
+    assert len(held_out) == 192

@@ -559,3 +559,54 @@ def score_summary(results: list[dict]) -> str:
     matched = sum(result["matched"] for result in results)
     return (f"Score: {score} / {10 * len(results)} · "
             f"{matched} of {len(results)} clauses read as the type you were asked for")
+
+
+# --- How well it works: each model next to a simple baseline (`python -m app.cli evaluate`).
+
+def next_word_accuracy(model: NGramModel, sentences: Iterable[list[str]], k: int = 1) -> float:
+    """Share of held-out next words (end of sentence included) that are in the model's top-k guesses."""
+    hits = total = 0
+    for tokens in sentences:
+        for i, word in enumerate(list(tokens) + [EOS]):
+            hits += word in {guess for guess, _ in model.predict(tokens[:i], k)}
+            total += 1
+    return hits / max(total, 1)
+
+
+class KeywordBaseline:
+    """The simple rival to GPT-2: pick the clause type whose marker words appear most in the sentence."""
+
+    def __init__(self, rows: Iterable[dict], top: int = 10):
+        rows = list(rows)
+        self.keywords = {label: set(words) for label, words in clause_keywords(rows, top).items()}
+        self.fallback = Counter(row["label"] for row in rows).most_common(1)[0][0]
+
+    def classify(self, text: str) -> tuple[str, float]:
+        words = set(tokenize(text))
+        hits = {label: len(words & marks) for label, marks in sorted(self.keywords.items())}
+        best = max(hits, key=hits.get)
+        return (best, hits[best] / len(self.keywords[best])) if hits[best] else (self.fallback, 0.0)
+
+    def accuracy(self, rows: Iterable[dict]) -> float:
+        rows = list(rows)
+        return sum(self.classify(row["text"])[0] == row["label"] for row in rows) / max(len(rows), 1)
+
+
+def evaluate(classifier=None, train_rows: list[dict] | None = None,
+             test_rows: list[dict] | None = None) -> list[tuple[str, str, float]]:
+    """(task, method, score) rows on the held-out game sentences: baselines first, then the real models."""
+    train_rows = load_corpus(split="train") if train_rows is None else train_rows
+    test_rows = load_corpus(split="play") if test_rows is None else test_rows
+    majority = Counter(row["label"] for row in train_rows).most_common(1)[0][0]
+    results = [
+        ("clause type accuracy", f"baseline: always '{majority}'",
+         sum(row["label"] == majority for row in test_rows) / len(test_rows)),
+        ("clause type accuracy", "baseline: count marker words", KeywordBaseline(train_rows).accuracy(test_rows)),
+    ]
+    if classifier is not None:
+        results.append(("clause type accuracy", "fine-tuned GPT-2", classifier.accuracy(test_rows)))
+    sentences = corpus_tokens(test_rows)
+    for n, name in [(1, "baseline: most common word"), (2, "2-gram"), (3, "3-gram"), (4, "4-gram (used in the game)")]:
+        model = train_ngram(train_rows, n=n)
+        results.append(("next word in top 3", name, next_word_accuracy(model, sentences, k=3)))
+    return results

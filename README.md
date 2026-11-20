@@ -43,12 +43,22 @@ Severability, Termination.
 
 ## Results
 
-| Model | Measure | Score |
+Measured on the 192 held-out game sentences, which neither model saw in training. Each model is set next to
+something simple, so the numbers mean something. Reproduce with `python -m app.cli evaluate`.
+
+| Task | Method | Score |
 |---|---|---|
-| Fine-tuned GPT-2 | accuracy on the 192 held-out game sentences | 94.3% |
-| Fine-tuned GPT-2 | accuracy on the validation split | 96.0% (3 epochs; 94.2% after 1) |
-| 4-gram | perplexity on the held-out game sentences | 15.8 |
-| 3-gram / 2-gram | same | 18.7 / 36.5 |
+| Clause type | Baseline: always guess one type | 13.0% |
+| Clause type | Baseline: pick the type whose marker words appear most | 83.3% |
+| Clause type | **Fine-tuned GPT-2** | **94.3%** |
+| Next word in top 3 guesses | Baseline: the 3 most common words | 16.0% |
+| Next word in top 3 guesses | 2-gram | 51.0% |
+| Next word in top 3 guesses | 3-gram | 64.4% |
+| Next word in top 3 guesses | **4-gram (used in the game)** | **67.5%** |
+
+GPT-2 makes about a third as many mistakes as the keyword baseline (5.7% vs 16.7% wrong). It reached 96.0%
+on its validation split after 3 epochs (94.2% after 1). The 4-gram also has the lowest held-out perplexity:
+15.8, against 18.7 for the 3-gram and 36.5 for the 2-gram.
 
 ## Run it
 
@@ -68,15 +78,16 @@ python -m app.cli play --rounds 8 --difficulty hard --seed 1   # same seed, same
 python -m app.cli predict "This Agreement shall be governed by"  # n-gram next words
 python -m app.cli classify "Any notice shall be in writing and delivered by hand."
 python -m app.cli history                                       # past scores
+python -m app.cli evaluate                                      # models vs baselines
 python -m app.cli build-corpus                                  # rebuild the corpus from LEDGAR
 pytest
 ```
 
-The game needs no API key: `.env` and `app/llm.py` come from the starter and are not used.
+No API key or server is needed: everything runs on your laptop.
 
 ## Tests
 
-`pytest` runs 15 tests, at least one per milestone. The GPT-2 tests fine-tune a tiny, randomly initialised GPT-2
+`pytest` runs 16 tests: at least one per milestone, one that checks each model beats its baseline, and the plumbing. The GPT-2 tests fine-tune a tiny, randomly initialised GPT-2
 (same architecture and files as the real one), so they run offline in a few seconds. GitHub Actions runs them on
 every push.
 
@@ -94,11 +105,12 @@ n-gram's own ending and the words that mark the clause type you missed.
 ## Layout
 
 ```text
-app/core.py        all five milestones, one section each
-app/cli.py         commands: play, train, classify, predict, build-corpus, history
+app/core.py        all five milestones, one section each, then the baselines
+app/storage.py     saves your scores to data/app.json
+app/cli.py         commands: play, train, classify, predict, evaluate, history, build-corpus
 corpus/            the prepared clause sentences (JSON lines: text, label, split)
 models/            your fine-tuned GPT-2 (created by `train`, not in git)
-tests/             test_core.py (milestones), test_smoke.py (starter plumbing)
+tests/             test_core.py (milestones, baselines), test_smoke.py (store and commands)
 ```
 
 ## Data
