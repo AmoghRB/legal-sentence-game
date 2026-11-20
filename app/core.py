@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -373,3 +375,89 @@ def train_classifier(rows: Iterable[dict] | None = None, base_model: str = "gpt2
                "epochs": epochs, "losses": losses, "val_accuracy": val_accuracy}
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     return metrics
+
+
+# --- Milestone 4: Create a CLI game interface presenting partial legal sentences for completion.
+# Each round shows the start of a real (held-out) clause plus n-gram hints; the player writes the ending.
+
+DIFFICULTY = {"easy": 0.6, "medium": 0.4, "hard": 0.25}     # share of the real sentence the player is shown
+
+
+@dataclass
+class Round:
+    prefix: str        # the start of a real clause, shown to the player
+    target: str        # the clause type the player should write
+    original: str      # the whole real sentence, revealed after the round
+
+
+def make_round(row: dict, difficulty: str = "medium") -> Round:
+    """Cut a corpus sentence down to its first words; harder levels show fewer words (always 3+ to write)."""
+    words = row["text"].split()
+    shown = min(max(3, round(len(words) * DIFFICULTY[difficulty])), len(words) - 3)
+    return Round(" ".join(words[:shown]), row["label"], row["text"])
+
+
+def pick_rounds(rows: Iterable[dict], n: int = 5, difficulty: str = "medium", seed: int | None = None) -> list[Round]:
+    """`n` rounds from `rows`, taking clause types in turn so one game mixes them."""
+    rng = random.Random(seed)
+    by_label: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_label[row["label"]].append(row)
+    labels = sorted(by_label)
+    rng.shuffle(labels)
+    for label in labels:
+        rng.shuffle(by_label[label])
+    rounds: list[Round] = []
+    while len(rounds) < n and any(by_label.values()):
+        for label in labels:
+            if by_label[label] and len(rounds) < n:
+                rounds.append(make_round(by_label[label].pop(), difficulty))
+    return rounds
+
+
+def join_completion(prefix: str, ending: str) -> str:
+    """The player's full sentence: the shown start plus what they typed."""
+    ending = " ".join(ending.split())
+    if not ending:
+        return prefix
+    return prefix + ("" if ending[0] in ",.;:)" else " ") + ending
+
+
+def ngram_hints(model: NGramModel, text: str, k: int = 3) -> list[str]:
+    """The k next words the n-gram model expects after `text`."""
+    return ["(end)" if word == EOS else word for word, _ in model.predict(tokenize(text), k)]
+
+
+def ngram_ending(model: NGramModel, text: str, max_words: int = 30) -> str:
+    """How the n-gram model would finish `text`."""
+    return detokenize(model.generate(tokenize(text), max_words))
+
+
+def play(rounds: list[Round], ngram: NGramModel, ask=input, say=print) -> list[dict]:
+    """Run the game in the terminal. `ask` and `say` are swappable so tests can play it too."""
+    results = []
+    for number, game_round in enumerate(rounds, 1):
+        article = "an" if game_round.target[0] in "AEIOU" else "a"
+        say(f"\nRound {number} of {len(rounds)} · write {article} {game_round.target} clause")
+        say(f"  {game_round.prefix} ...")
+        say(f"  n-gram hints for the next word: {' · '.join(ngram_hints(ngram, game_round.prefix))}")
+        hint_used = False
+        while True:
+            try:
+                answer = ask("Your ending (? = n-gram suggestion, q = quit) > ").strip()
+            except EOFError:
+                answer = "q"
+            if answer.lower() == "q":
+                return results
+            if answer == "?":
+                hint_used = True
+                say(f"  n-gram suggests: ... {ngram_ending(ngram, game_round.prefix)}")
+            elif len(answer.split()) < 2:
+                say("  Write at least two words to finish the sentence.")
+            else:
+                break
+        sentence = join_completion(game_round.prefix, answer)
+        say(f"  Your clause: {sentence}")
+        say(f"  Real clause: {game_round.original}")
+        results.append({"target": game_round.target, "sentence": sentence, "hint_used": hint_used})
+    return results

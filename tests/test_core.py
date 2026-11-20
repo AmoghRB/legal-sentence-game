@@ -98,9 +98,43 @@ def test_milestone_3_missing_model_says_how_to_train(tmp_path):
 
 
 # Milestone 4: Create a CLI game interface presenting partial legal sentences for completion.
-@pytest.mark.skip(reason="remove this line when you start milestone 4")
-def test_milestone_4():
-    raise NotImplementedError("write the test for milestone 4")
+LAW = {"text": "This Agreement shall be governed by the laws of the State of New York without regard to its "
+                "conflicts of law rules.", "label": "Governing Law", "split": "play"}
+SEVERABILITY = {"text": "If any provision of this Agreement is held invalid, the remaining provisions shall continue "
+                        "in full force and effect.", "label": "Severability", "split": "play"}
+
+
+def test_milestone_4_rounds_show_the_start_of_a_held_out_clause():
+    easy, medium, hard = (core.make_round(LAW, level) for level in ("easy", "medium", "hard"))
+    assert LAW["text"].startswith(hard.prefix) and hard.target == "Governing Law" and hard.original == LAW["text"]
+    assert 3 <= len(hard.prefix.split()) < len(medium.prefix.split()) < len(easy.prefix.split())
+    assert len(easy.prefix.split()) <= len(LAW["text"].split()) - 3                  # always something left to write
+
+    play_rows = core.load_corpus(split="play")
+    rounds = core.pick_rounds(play_rows, n=8, seed=1)
+    assert len({r.target for r in rounds}) == 8                                       # one of each clause type
+    assert core.pick_rounds(play_rows, n=8, seed=1) == rounds                         # same seed, same game
+    assert {r.original for r in rounds} <= {row["text"] for row in play_rows}         # never a training sentence
+
+    assert core.join_completion("is held", "  to be invalid. ") == "is held to be invalid."
+    assert core.join_completion("of New York", ", without regard") == "of New York, without regard"
+
+
+def test_milestone_4_play_loop_shows_hints_and_reads_endings():
+    ngram = core.train_ngram()
+    rounds = [core.make_round(SEVERABILITY, "medium"), core.make_round(LAW, "medium")]
+    answers = iter(["?", "x", "to be invalid, the rest of this Agreement stays in force.", "q"])
+    said = []
+    results = core.play(rounds, ngram, ask=lambda prompt: next(answers), say=said.append)
+    screen = "\n".join(said)
+
+    assert "Round 1 of 2" in screen and "write a Severability clause" in screen
+    assert rounds[0].prefix in screen
+    assert "n-gram hints for the next word" in screen and "n-gram suggests" in screen
+    assert "at least two words" in screen                                              # "x" was rejected
+    assert len(results) == 1                                                           # quit in round 2
+    assert results[0]["hint_used"] is True
+    assert results[0]["sentence"] == rounds[0].prefix + " to be invalid, the rest of this Agreement stays in force."
 
 
 # Milestone 5: After user completion, classify the full sentence and provide feedback.

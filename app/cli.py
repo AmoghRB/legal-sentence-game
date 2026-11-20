@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> None:
     classify.add_argument("text")
     classify.add_argument("--model", default=str(core.MODEL_DIR))
 
+    play = sub.add_parser("play", help="play the game")
+    play.add_argument("--rounds", type=int, default=5)
+    play.add_argument("--difficulty", choices=list(core.DIFFICULTY), default="medium",
+                      help="how much of each clause you are shown: easy 60%%, medium 40%%, hard 25%%")
+    play.add_argument("--seed", type=int, default=None, help="same seed, same clauses")
+
     args = parser.parse_args(argv)
     if args.command == "hello":
         print("Legal Sentence Game is ready. Open README.md for your milestones.")
@@ -57,6 +63,15 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(str(error))
         for label, prob in list(classifier.predict_proba(args.text).items())[:3]:
             print(f"  {label:<18} {prob:.1%}")
+    elif args.command == "play":
+        ngram = core.train_ngram()
+        rounds = core.pick_rounds(core.load_corpus(split="play"), args.rounds, args.difficulty, args.seed)
+        print(f"Legal Sentence Game · {len(rounds)} rounds · {args.difficulty}")
+        print("Finish each clause so it reads as the clause type asked for.")
+        try:
+            core.play(rounds, ngram)
+        except KeyboardInterrupt:
+            print()
 
 
 if __name__ == "__main__":
