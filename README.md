@@ -1,6 +1,6 @@
 # Legal Sentence Game
 
-[![Built with askThili](https://ask.thili.ai/api/v1/public/projects/ynrdq3wmdc/badge.svg)](https://ask.thili.ai/b/ynrdq3wmdc)
+[![Built with askThili](https://msrit.ask.thili.ai/api/v1/public/projects/ynrdq3wmdc/badge.svg)](https://msrit.ask.thili.ai/b/ynrdq3wmdc)
 [![tests](https://github.com/AmoghRB/legal-sentence-game/actions/workflows/ci.yml/badge.svg)](https://github.com/AmoghRB/legal-sentence-game/actions/workflows/ci.yml)
 
 A command-line game for law students. Each round shows the start of a real contract clause and asks you to
