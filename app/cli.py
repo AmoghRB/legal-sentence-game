@@ -8,9 +8,11 @@ from app.storage import Store
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="legal-sentence-game", description="Law students play a CLI game to practice drafting legal sentences using n-gram prediction, receiving instant feedback on generated clause types from a fine-tuned GPT-2 model.")
+    parser = argparse.ArgumentParser(
+        prog="legal-sentence-game",
+        description="Finish real contract clauses with n-gram hints; a fine-tuned GPT-2 tells you which clause "
+                    "type you wrote. Start with `train`, then `play`.")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("hello", help="check that everything is wired up")
 
     build = sub.add_parser("build-corpus", help="milestone 1: rebuild corpus/clauses.jsonl from LEDGAR")
     build.add_argument("--per-label", type=int, default=250, help="sentences kept per clause type")
@@ -37,11 +39,11 @@ def main(argv: list[str] | None = None) -> None:
     play.add_argument("--seed", type=int, default=None, help="same seed, same clauses")
     play.add_argument("--model", default=str(core.MODEL_DIR), help="the fine-tuned GPT-2 folder")
     sub.add_parser("history", help="your past games and best score")
+    evaluate = sub.add_parser("evaluate", help="compare GPT-2 and the n-gram with simple baselines")
+    evaluate.add_argument("--model", default=str(core.MODEL_DIR))
 
     args = parser.parse_args(argv)
-    if args.command == "hello":
-        print("Legal Sentence Game is ready. Open README.md for your milestones.")
-    elif args.command == "build-corpus":
+    if args.command == "build-corpus":
         rows = core.build_corpus(core.download_ledgar(), per_label=args.per_label)
         path = core.save_corpus(rows, args.out)
         counts = Counter(row["label"] for row in rows)
@@ -97,6 +99,16 @@ def main(argv: list[str] | None = None) -> None:
         if games:
             best = max(games, key=lambda game: game["score"] / game["max"])
             print(f"Best: {best['score']} / {best['max']} on {best['date']} ({best['difficulty']})")
+    elif args.command == "evaluate":
+        try:
+            classifier = core.load_classifier(args.model)
+        except FileNotFoundError as error:
+            print(f"{error}\nShowing the baselines and n-gram only.")
+            classifier = None
+        print(f"On the {len(core.load_corpus(split='play'))} held-out game sentences:")
+        for task, method, score in core.evaluate(classifier):
+            print(f"  {task:<22} {method:<34} {score:6.1%}")
+
 
 if __name__ == "__main__":
     main()

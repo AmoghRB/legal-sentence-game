@@ -1,6 +1,3 @@
-# Secrets: never commit your real settings
-.env
-
 # Python
 __pycache__/
 *.pyc
